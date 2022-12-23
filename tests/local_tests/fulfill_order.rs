@@ -50,18 +50,19 @@ async fn fulfill_order() {
 
     let balance = wallet.get_asset_balance(&usdt_asset_id).await.unwrap();
     assert!(balance == parse_units(10000 - 10, usdt_decimals));
-    
+
     let _res = dapp_methods
-    .fulfill_order(1)
-    .call_params(CallParameters::new(
-        Some(parse_units(10, usdc_decimals)),
-        Some(usdc_asset_id),
-        None,
-    ))
-    .append_message_outputs(2)
-    .append_variable_outputs(2)
-    .call()
-    .await;
+        .fulfill_order(1)
+        .call_params(CallParameters::new(
+            Some(parse_units(10, usdc_decimals)),
+            Some(usdc_asset_id),
+            None,
+        ))
+        .estimate_tx_dependencies(Option::None)
+        .await
+        .unwrap()
+        .call()
+        .await;
     println!("\n{} Fulfill Order", if _res.is_ok() { "✅" } else { "❌" });
 
     let balance = wallet.get_asset_balance(&usdt_asset_id).await.unwrap();
