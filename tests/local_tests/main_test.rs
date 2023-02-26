@@ -1,4 +1,4 @@
-use fuels::prelude::CallParameters;
+use fuels::prelude::{CallParameters, BASE_ASSET_ID, TxParameters};
 use fuels::tx::{Address, AssetId, ContractId};
 
 use crate::utils::local_tests_utils::*;
@@ -35,7 +35,10 @@ async fn main_test() {
     let dapp_methods = limit_orders_instance.methods();
 
     assert!(dapp_methods.order_by_id(2).simulate().await.is_err());
-
+    println!(
+        "Balance {} ETH",
+        wallet.get_asset_balance(&BASE_ASSET_ID).await.unwrap()
+    );
     let _res = dapp_methods
         .create_order(
             ContractId::from(usdc_instance.get_contract_id()),
@@ -46,9 +49,16 @@ async fn main_test() {
             Some(usdt_asset_id),
             None,
         ))
+        .tx_params(TxParameters::new(Some(100), Some(100_000_000), Some(0)))
         .append_variable_outputs(1)
         .call()
         .await;
+    println!("Gas used = {:?}", _res.unwrap().gas_used);
+    println!(
+        "Balance {} ETH",
+        wallet.get_asset_balance(&BASE_ASSET_ID).await.unwrap()
+    );
+    return;
     println!("\n{} Create Order", if _res.is_ok() { "✅" } else { "❌" });
 
     let balance = wallet.get_asset_balance(&usdt_asset_id).await.unwrap();
