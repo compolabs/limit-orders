@@ -30,6 +30,9 @@ abi LimitOrders {
     fn orders_amount() -> u64;
 
     #[storage(read)]
+    fn trades(offset: u64) ->  (Option<Trade>,Option<Trade>,Option<Trade>,Option<Trade>,Option<Trade>,Option<Trade>,Option<Trade>,Option<Trade>,Option<Trade>,Option<Trade>,);
+
+    #[storage(read)]
     fn order_by_id(id: u64) -> Order;
 
     #[payable]
@@ -68,10 +71,20 @@ pub struct Order {
     matcher_fee_used: u64,
 }
 
+struct Trade {
+    order_id: u64,
+    asset0: ContractId,
+    amount0: u64,
+    asset1: ContractId,
+    amount1: u64,
+    timestamp: u64,
+}
+
 storage {
     orders: StorageMap<u64, Order> = StorageMap {},
     orders_amount: u64 = 0,
     deposits: StorageMap<Address, u64> = StorageMap {},
+    trades: StorageVec<Trade> = StorageVec {},
 }
 
 fn get_sender_or_throw() -> Address {
@@ -123,6 +136,22 @@ impl LimitOrders for Contract {
         let order = storage.orders.get(id);
         require(id > 0 && order.id == id, "Order is not found");
         order
+    }
+
+    #[storage(read)]
+    fn trades(offset: u64) -> (Option<Trade>, Option<Trade>, Option<Trade>, Option<Trade>, Option<Trade>, Option<Trade>, Option<Trade>, Option<Trade>, Option<Trade>, Option<Trade>){
+        let mut vec = Vec::new();
+        let mut i = 0;
+        while i < 10 {
+            let trade = if storage.trades.len() - 1  < i + offset {
+                Option::None
+            }else{ 
+                storage.trades.get(storage.trades.len() - 1 - i - offset)
+            };
+            vec.push(trade);
+            i += 1;
+        }
+        (vec.get(0).unwrap() ,vec.get(1).unwrap() ,vec.get(2).unwrap() ,vec.get(3).unwrap() ,vec.get(4).unwrap(),vec.get(5).unwrap() ,vec.get(6).unwrap() ,vec.get(7).unwrap() ,vec.get(8).unwrap() ,vec.get(9).unwrap())
     }
 
     #[payable]
@@ -186,6 +215,15 @@ impl LimitOrders for Contract {
         let amount1_left = order.amount1 - order.fulfilled1;
         let caller = get_sender_or_throw();
 
+        let mut trade = Trade {
+            order_id: id,
+            asset0: order.asset0,
+            amount0: 0,
+            asset1: order.asset1,
+            amount1: 0,
+            timestamp: timestamp(),
+        };
+
         //If paid more than amount1 - close the order and give cashback
         if (payment_amount >= amount1_left) { 
             // Give the caller asset1 difference like cashback
@@ -194,11 +232,12 @@ impl LimitOrders for Contract {
             transfer_to_address(amount0_left, order.asset0, caller); 
             // The owner will receive asset1 how much is left
             transfer_to_address(amount1_left, order.asset1, order.owner);
-            order.fulfilled0 = order.fulfilled0 + amount0_left;
-            order.fulfilled1 = order.fulfilled1 + amount1_left;
+            order.fulfilled0 += amount0_left;
+            order.fulfilled1 += amount1_left;
+            trade.amount0 = amount0_left;
+            trade.amount1 = amount1_left;
             order.status = Status::Completed;
             storage.orders.insert(id, order);
-
             let deposit = storage.deposits.get(order.owner);
             storage.deposits.insert(order.owner, deposit + order.matcher_fee - order.matcher_fee_used);
         }
@@ -210,11 +249,15 @@ impl LimitOrders for Contract {
             //The caller will receive a piece of amount0 floored to integer
             transfer_to_address(order.amount0, order.asset0, caller);
 
-            order.fulfilled0 = order.fulfilled0 + amount0;
-            order.fulfilled1 = order.fulfilled1 + payment_amount;
+            order.fulfilled0 += amount0;
+            order.fulfilled1 += payment_amount;
+            trade.amount0 = amount0;
+            trade.amount1 = payment_amount;
             storage.orders.insert(id, order);
             //FIXME handle matcher fee
         }
+
+        storage.trades.push(trade);
     }
 
     #[storage(read, write)]
@@ -238,19 +281,41 @@ impl LimitOrders for Contract {
         let order1_amount1_left = order1.amount1 - order1.fulfilled1;
         let order1_matcher_fee_left = order1.matcher_fee - order1.matcher_fee_used;
 
+        let mut trade0 = Trade {
+            order_id: order0_id,
+            asset0: order0.asset0,
+            amount0: 0,
+            asset1: order0.asset1,
+            amount1: 0,
+            timestamp: timestamp(),
+        };
+
+        let mut trade1 = Trade {
+            order_id: order1_id,
+            asset0: order1.asset0,
+            amount0: 0,
+            asset1: order1.asset1,
+            amount1: 0,
+            timestamp: timestamp(),
+        };
+
         if order0_amount0_left >= order1_amount1_left {   
         
         // Transfer order1_amount1 from order0 to order1
             order0.fulfilled0 += order1_amount1_left;
             order1.fulfilled1 += order1_amount1_left;
+            trade0.amount0 = order1_amount1_left;
+            trade1.amount1 = order1_amount1_left;
             transfer_to_address(order1_amount1_left, order1.asset1, order1.owner);
             order1.status = Status::Completed;
 
         // Transfer order0_fulfill_percent * order0_amount1 / 100 from order1 to order0
             let order0_fulfill_percent = order1_amount1_left * 100 / order0_amount0_left;
             let order0_fulfill_amount = order0_fulfill_percent * order0_amount1_left / 100;
-            order1.fulfilled0 += order0_fulfill_amount; 
+            order1.fulfilled0 += order0_fulfill_amount;
             order0.fulfilled1 += order0_fulfill_amount;
+            trade1.amount0 = order0_fulfill_amount;
+            trade0.amount1 = order0_fulfill_amount;
             transfer_to_address(order0_fulfill_amount, order0.asset1, order0.owner);
             if order0_fulfill_percent == 100 {
                 order0.status = Status::Completed;
@@ -259,7 +324,7 @@ impl LimitOrders for Contract {
         // Transfer order1_amount0 - order0_fulfill_percent * order0_amount1 / 100 from order1 to order1.owner 
             let cashback = order1_amount0_left - order0_fulfill_amount;
             if cashback > 0 {
-                order1.fulfilled0 += cashback; 
+                order1.fulfilled0 += cashback;
                 transfer_to_address(cashback, order1.asset0, order1.owner);
             }
 
@@ -269,19 +334,22 @@ impl LimitOrders for Contract {
             order1.matcher_fee_used += order1_matcher_fee_left;
             transfer_to_address(order0_matcher_fee + order1_matcher_fee_left, BASE_ASSET_ID, matcher);
         } else {
-
         // Transfer order0_amount0 from order0 to order1
             order0.fulfilled0 += order0_amount0_left;
             order1.fulfilled1 += order0_amount0_left;
+            trade0.amount0 = order0_amount0_left;
+            trade1.amount1 = order0_amount0_left;
             transfer_to_address(order0_amount0_left, order0.asset0, order1.owner);
         // Transfer order0_amount1 from order1 to order0
             order0.fulfilled1 += order0_amount1_left;
             order1.fulfilled0 += order0_amount1_left;
+            trade0.amount1 = order0_amount1_left;
+            trade1.amount0 = order0_amount1_left;
             transfer_to_address(order0_amount1_left, order0.asset1, order0.owner);
             order0.status = Status::Completed;
-        
-        // Transfer order1_amount0 * order1_fulfill_percent - order0_amount1 (a: 0.01 BTC, b: 0 BTC) from order1 to order1.owner 
-            let order1_fulfill_percent = order0_amount0_left * 100 / order1_amount1_left ;
+
+                // Transfer order1_amount0 * order1_fulfill_percent - order0_amount1 (a: 0.01 BTC, b: 0 BTC) from order1 to order1.owner 
+            let order1_fulfill_percent = order0_amount0_left * 100 / order1_amount1_left;
             let cashback = order1_amount0_left * order1_fulfill_percent / 100 - order0_amount1_left;
             if cashback > 0 {
                 order1.fulfilled0 += cashback;
@@ -294,6 +362,8 @@ impl LimitOrders for Contract {
             order1.matcher_fee_used += order1_matcher_fee;
             transfer_to_address(order0_matcher_fee + order1_matcher_fee, BASE_ASSET_ID, matcher);
         }
+        storage.trades.push(trade0);
+        storage.trades.push(trade1);
         storage.orders.insert(order0.id, order0);
         storage.orders.insert(order1.id, order1);
     }

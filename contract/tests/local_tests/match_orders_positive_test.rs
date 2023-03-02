@@ -253,4 +253,13 @@ async fn match_orders_positive_test() {
         // println!("order_a = {:#?}", order_a);
         // println!("order_b = {:#?}", order_b);
     }
+    let offset = 0;
+    let trades = instance
+        .methods()
+        .trades(offset)
+        .simulate()
+        .await
+        .unwrap()
+        .value;
+    println!("trades offset {offset} = {:#?}", trades);
 }
