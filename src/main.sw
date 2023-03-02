@@ -19,6 +19,7 @@ abi LimitOrders {
     #[storage(read)]
     fn get_deposit_by_address(address: Address) -> u64;
 
+    #[payable]
     #[storage(read, write)]
     fn deposit();
 
@@ -31,14 +32,17 @@ abi LimitOrders {
     #[storage(read)]
     fn order_by_id(id: u64) -> Order;
 
+    #[payable]
     #[storage(read, write)]
-    fn create_order(asset1: ContractId, amount1: u64, matcher_fee: u64);
+    fn create_order(asset1: ContractId, amount1: u64, matcher_fee: u64) -> u64;
 
     #[storage(read, write)]
     fn cancel_order(id: u64);
 
+    #[payable]
     #[storage(read, write)]
     fn fulfill_order(id: u64);
+
     #[storage(read, write)]
     fn match_orders(order_id_a: u64, order_id_b: u64);
 }
@@ -90,6 +94,7 @@ impl LimitOrders for Contract {
         storage.deposits.get(address)
     }
 
+    #[payable]
     #[storage(read, write)]
     fn deposit() {
         let amount = msg_amount();
@@ -120,14 +125,16 @@ impl LimitOrders for Contract {
         order
     }
 
+    #[payable]
     #[storage(read, write)]
-    fn create_order(asset1: ContractId, amount1: u64, matcher_fee: u64) {
+    fn create_order(asset1: ContractId, amount1: u64, matcher_fee: u64) -> u64 {
         let asset0 = msg_asset_id();
         let amount0 = msg_amount();
         let caller = get_sender_or_throw();
         let deposit = storage.deposits.get(caller);
         require(amount0 > 0 && amount1 > 0, "Amount cannot be less then 1");
         require(deposit >= matcher_fee, "Not enough deposit");
+        let id = storage.orders_amount + 1;
 
         let order = Order {
             asset0,
@@ -137,7 +144,7 @@ impl LimitOrders for Contract {
             fulfilled0: 0,
             fulfilled1: 0,
             status: Status::Active,
-            id: storage.orders_amount + 1,
+            id,
             timestamp: timestamp(),
             owner: caller,
             matcher_fee,
@@ -147,6 +154,7 @@ impl LimitOrders for Contract {
         storage.orders_amount = order.id;
         storage.orders.insert(order.id, order);
         storage.deposits.insert(caller, deposit - matcher_fee);
+        id
     }
 
     #[storage(read, write)]
@@ -163,6 +171,7 @@ impl LimitOrders for Contract {
         transfer_to_address(order.amount0 - order.fulfilled0, order.asset0, order.owner);
     }
 
+    #[payable]
     #[storage(read, write)]
     fn fulfill_order(id: u64) {
         let mut order = storage.orders.get(id);
@@ -177,7 +186,7 @@ impl LimitOrders for Contract {
         let amount1_left = order.amount1 - order.fulfilled1;
         let caller = get_sender_or_throw();
 
-                //If paid more than amount1 - close the order and give cashback
+        //If paid more than amount1 - close the order and give cashback
         if (payment_amount >= amount1_left) { 
             // Give the caller asset1 difference like cashback
             transfer_to_address(payment_amount - amount1_left, order.asset1, caller); 
@@ -204,26 +213,22 @@ impl LimitOrders for Contract {
             order.fulfilled0 = order.fulfilled0 + amount0;
             order.fulfilled1 = order.fulfilled1 + payment_amount;
             storage.orders.insert(id, order);
+            //FIXME handle matcher fee
         }
     }
 
     #[storage(read, write)]
     //TODO orders_ids_a: u64[], orders_ids_b: u64[]
-    fn match_orders(order_id_a: u64, order_id_b: u64) {
+    fn match_orders(order0_id: u64, order1_id: u64) {
         let matcher = get_sender_or_throw();
-        let order_a = storage.orders.get(order_id_a);
-        let order_b = storage.orders.get(order_id_b);
-        require(order_id_a > 0 && order_a.id == order_id_a, "Order a is not found");
-        require(order_id_b > 0 && order_b.id == order_id_b, "Order b is not found");
-        require(order_a.asset0 == order_b.asset1 && order_a.asset1 == order_b.asset0, "Orders don't match");
-
-        let price_a = order_a.amount1 / order_a.amount0;
-        let price_b = order_b.amount0 / order_b.amount1;
-        let (mut order0, mut order1) = if price_a <= price_b {
-            (order_a, order_b)
-        } else {
-            (order_b, order_a)
-        };
+        let mut order0 = storage.orders.get(order0_id);
+        let mut order1 = storage.orders.get(order1_id);
+        require(order0_id > 0 && order0.id == order0_id, "Order 0 is not found");
+        require(order1_id > 0 && order1.id == order1_id, "Order 1 is not found");
+        require(order0.asset0 == order1.asset1 && order0.asset1 == order1.asset0, "Orders don't match by tokens");
+        let price_0 = order0.amount1 * 1_000_000_000 / order0.amount0;
+        let price_1 = order1.amount0 * 1_000_000_000 / order1.amount1;
+        require(price_0 <= price_1, "Price of order 1 is too much");
 
         let order0_amount0_left = order0.amount0 - order0.fulfilled0;
         let order0_amount1_left = order0.amount1 - order0.fulfilled1;
@@ -234,33 +239,37 @@ impl LimitOrders for Contract {
         let order1_matcher_fee_left = order1.matcher_fee - order1.matcher_fee_used;
 
         if order0_amount0_left >= order1_amount1_left {   
+        
         // Transfer order1_amount1 from order0 to order1
             order0.fulfilled0 += order1_amount1_left;
             order1.fulfilled1 += order1_amount1_left;
             transfer_to_address(order1_amount1_left, order1.asset1, order1.owner);
             order1.status = Status::Completed;
+
         // Transfer order0_fulfill_percent * order0_amount1 / 100 from order1 to order0
             let order0_fulfill_percent = order1_amount1_left * 100 / order0_amount0_left;
             let order0_fulfill_amount = order0_fulfill_percent * order0_amount1_left / 100;
-            order1.fulfilled0 += order0_fulfill_amount;
+            order1.fulfilled0 += order0_fulfill_amount; 
             order0.fulfilled1 += order0_fulfill_amount;
             transfer_to_address(order0_fulfill_amount, order0.asset1, order0.owner);
             if order0_fulfill_percent == 100 {
                 order0.status = Status::Completed;
             }
 
-        // Transfer order1_amount0 - order0_fulfill_percent * order0_amount1 / 100 from order1 to matcher 
-            let matcher_reward_amount = order1_amount0_left - order0_fulfill_amount;
-            if matcher_reward_amount > 0 {
-                transfer_to_address(matcher_reward_amount, order1.asset0, matcher);
+        // Transfer order1_amount0 - order0_fulfill_percent * order0_amount1 / 100 from order1 to order1.owner 
+            let cashback = order1_amount0_left - order0_fulfill_amount;
+            if cashback > 0 {
+                order1.fulfilled0 += cashback; 
+                transfer_to_address(cashback, order1.asset0, order1.owner);
             }
+
         // Mathcer fee
-            let order0_matcher_fee = order0_matcher_fee_left * order0_fulfill_percent;
+            let order0_matcher_fee = order0_matcher_fee_left * order0_fulfill_percent / 100;
             order0.matcher_fee_used += order0_matcher_fee;
-            let order1_matcher_fee = order1.matcher_fee - order1.matcher_fee_used;
-            order1.matcher_fee_used += order1_matcher_fee;
-            transfer_to_address(order0_matcher_fee + order1_matcher_fee, BASE_ASSET_ID, matcher);
+            order1.matcher_fee_used += order1_matcher_fee_left;
+            transfer_to_address(order0_matcher_fee + order1_matcher_fee_left, BASE_ASSET_ID, matcher);
         } else {
+
         // Transfer order0_amount0 from order0 to order1
             order0.fulfilled0 += order0_amount0_left;
             order1.fulfilled1 += order0_amount0_left;
@@ -270,16 +279,18 @@ impl LimitOrders for Contract {
             order1.fulfilled0 += order0_amount1_left;
             transfer_to_address(order0_amount1_left, order0.asset1, order0.owner);
             order0.status = Status::Completed;
-        // Transfer order1_amount0 * order1_fulfill_percent - order0_amount1 (a: 0.01 BTC, b: 0 BTC) from order1 to matcher 
-            let order1_fulfill_percent = order0_amount0_left / order1_amount1_left * 100;
-            let matcher_reward_amount = order1_amount0_left * order1_fulfill_percent - order0_amount1_left;
-            if matcher_reward_amount > 0 {
-                transfer_to_address(matcher_reward_amount, order1.asset0, matcher);
+        
+        // Transfer order1_amount0 * order1_fulfill_percent - order0_amount1 (a: 0.01 BTC, b: 0 BTC) from order1 to order1.owner 
+            let order1_fulfill_percent = order0_amount0_left * 100 / order1_amount1_left ;
+            let cashback = order1_amount0_left * order1_fulfill_percent / 100 - order0_amount1_left;
+            if cashback > 0 {
+                order1.fulfilled0 += cashback;
+                transfer_to_address(cashback, order1.asset0, order1.owner);
             }
         // Matcher fee
             let order0_matcher_fee = order0.matcher_fee - order0.matcher_fee_used;
             order0.matcher_fee_used += order0_matcher_fee;
-            let order1_matcher_fee = order1_matcher_fee_left * order1_fulfill_percent;
+            let order1_matcher_fee = order1_matcher_fee_left * order1_fulfill_percent / 100;
             order1.matcher_fee_used += order1_matcher_fee;
             transfer_to_address(order0_matcher_fee + order1_matcher_fee, BASE_ASSET_ID, matcher);
         }

@@ -14,3 +14,7 @@ tokio = { version = "1.12", features = ["rt", "macros"] }
 harness = true
 name = "integration_tests"
 path = "tests/harness.rs"
+
+[dependencies]
+rand = "0.8.5"
+serde_json = "1.0.93"
